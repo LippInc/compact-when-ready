@@ -1799,6 +1799,40 @@ test('handoff summary: with no skill used, the summary has no skills part', asyn
   expect(text).not.toMatch(/Skills used earlier|<skill /)
 })
 
+const viaSearch = (query: string) => ({
+  role: 'assistant' as const,
+  text: '',
+  toolUses: [{ tool_use_id: `t-${query}`, tool: 'ToolSearch', input: { query, max_results: 5 } }],
+})
+
+test('handoff summary: tools loaded with ToolSearch select: are named for loading again, at this nap and the next', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  const messages = [viaSearch('select:TaskCreate,TaskUpdate'), viaSearch('notebook jupyter'), viaSearch('select: Monitor , TaskCreate'), ...MSGS]
+  const text = (await engineCompacts($, { messages })).messages?.[0]?.text ?? ''
+  const line =
+    '\n\nTools you loaded with ToolSearch before this compaction are unloaded now, and a call to one of them fails until it is loaded again. ' +
+    'Before you call any of them, load them with one call: ToolSearch with query "select:TaskCreate,TaskUpdate,Monitor".'
+  expect(text).toContain(line)
+  expect(text).not.toContain('jupyter') // a keyword search names no tool
+  await clock.advance(1600)
+  w.pct = 5
+  await $.tool.call(read)
+  w.pct = 64
+  await ownNap($, w, clock, 'Next: T09.', 't2')
+  const again = (await engineCompacts($, { messages: [{ role: 'user', text, toolUses: [] }, ...MSGS] })).messages?.[0]?.text ?? ''
+  expect(again).toContain(line)
+})
+
+test('handoff summary: with no tool loaded, the summary has no tools part', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  const text = (await engineCompacts($)).messages?.[0]?.text ?? ''
+  expect(text).not.toContain('ToolSearch')
+})
+
 test('handoff summary: skillsIn and keepSkills: names from the conversation; the newest texts, each cut, up to the cap', () => {
   expect([...skillsIn([])]).toEqual([])
   expect([...skillsIn([typed('a'), viaTool('b'), { text: 'x <skill name="c">\ny\n</skill>', toolUses: [] }])]).toEqual(['a', 'b', 'c'])

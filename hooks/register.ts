@@ -347,6 +347,26 @@ export const skillsIn = (messages: readonly { text: string; toolUses: readonly {
   return names
 }
 
+// handoff_summary: the deferred tools the main conversation loaded, by name: a ToolSearch call with a select: query,
+// or the select: line of catnap's summary from an earlier nap. The engine keeps loaded tools across its own compaction
+// (the compact boundary's preCompactDiscoveredTools), but not across one a mod answers: they come back unloaded, and a
+// model that calls one from memory gets it refused. A keyword search names no tool and is not among them.
+const TOOLS_LINE = /ToolSearch with query "select:([^"]+)"/g
+export const toolsIn = (messages: readonly { text: string; toolUses: readonly { tool: string; input: Record<string, unknown> }[] }[]) => {
+  const names = new Set<string>()
+  const add = (list: string) => {
+    for (const n of list.split(',')) if (n.trim()) names.add(n.trim())
+  }
+  for (const m of messages) {
+    for (const hit of m.text.matchAll(TOOLS_LINE)) add(hit[1] ?? '')
+    for (const u of m.toolUses) {
+      const q = u.input.query
+      if (u.tool === 'ToolSearch' && typeof q === 'string' && q.trim().startsWith('select:')) add(q.trim().slice('select:'.length))
+    }
+  }
+  return [...names]
+}
+
 // handoff_summary: of the skills loaded this session (name -> text, oldest first), the ones the conversation used,
 // oldest first: the newest ones, each cut at SKILL_EACH, up to SKILL_MAX characters in all
 export const keepSkills = (loaded: ReadonlyMap<string, string>, used: ReadonlySet<string>): [string, string][] => {
@@ -368,6 +388,7 @@ export const ownSummaryText = (
   cut: boolean,
   said: readonly string[],
   skills: readonly [string, string][] = [],
+  tools: readonly string[] = [],
 ) => {
   const saved = job.handoff ? ` (saved in ${job.handoff})` : ''
   const rest = cut ? `\n[cut here at ${PASTE_MAX} characters: read the rest in ${job.handoff} before you go on]` : ''
@@ -378,9 +399,13 @@ export const ownSummaryText = (
     ? '\n\nSkills used earlier in this session, as they were loaded: keep following their standing rules where they still apply, ' +
       `and do not redo their one-time steps.\n\n${skills.map(([n, t]) => `<skill name="${n}">\n${t}\n</skill>`).join('\n')}`
     : ''
+  const reload = tools.length
+    ? '\n\nTools you loaded with ToolSearch before this compaction are unloaded now, and a call to one of them fails until it is loaded again. ' +
+      `Before you call any of them, load them with one call: ToolSearch with query "select:${tools.join(',')}".`
+    : ''
   return (
     `[${NAME}] This conversation was compacted at your request (context had reached ${job.percent}%). ` +
-    `In place of a summary, here is the handoff you wrote just before it${saved}:\n\n<handoff>\n${text}${rest}\n</handoff>${words}${loaded}`
+    `In place of a summary, here is the handoff you wrote just before it${saved}:\n\n<handoff>\n${text}${rest}\n</handoff>${words}${loaded}${reload}`
   )
 }
 
@@ -963,7 +988,7 @@ export const register: Register = (on, options) => {
           return pre
         }
         if (pre) log('pre-compact', { outcome: 'summarized', tokensAfter: pre.tokensAfter }) // dropped: the handoff stands
-        const text = ownSummaryText(ours, back.text, back.cut, said, keepSkills(skillTexts, skillsIn(e.messages)))
+        const text = ownSummaryText(ours, back.text, back.cut, said, keepSkills(skillTexts, skillsIn(e.messages)), toolsIn(e.messages))
         reset()
         landedJob = ours
         landedOwn = true
